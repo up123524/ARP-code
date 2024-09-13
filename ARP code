@@ -1,0 +1,660 @@
+##predicting monthly stock return
+
+##loading relevant libraries
+#occasionally packages will need to be roloaded if data retrieval error occurs
+package_list <- list(
+  "quantmod", "dplyr", "stringr", "ggplot2",
+  "PerformanceAnalytics", "PortfolioAnalytics",
+  "forecast", "ROI", "ROI.plugin.quadprog",
+  "ROI.plugin.glpk", "readxl", "Quandl", "tseries", "lubridate" , "zoo", "ggplot2"
+)
+
+# Install and load packages
+for (package_name in package_list) {
+  if (!requireNamespace(package_name, quietly = TRUE)) {
+    install.packages(package_name)
+  }
+  library(package_name, character.only = TRUE)
+}
+
+
+
+
+###################################
+#monthly stock return 
+sp_adj_m<-getSymbols.yahoo("^NYA", from="2015-11-01",to="2023-06-01"  , periodicity = "monthly", auto.assign=FALSE)[,6]
+sp_rets_m<-na.omit(ROC(sp_adj_m, type = "discrete"))
+mtb_m <- getSymbols.yahoo("^IRX", from = "2015-11-01", to="2023-06-01", periodicity = "monthly", auto.assign = FALSE)[,6]
+mtb_rets_m<-na.omit(ROC(mtb_m, type = "discrete"))
+sp_ex_rets_m<-sp_rets_m-mtb_rets_m
+sum(is.na(sp_ex_rets_m))
+row.names(sp_ex_rets_m)<-NULL
+View(sp_ex_rets_m)
+View(sp_adj_m)
+length(sp_rets_m)
+View(sp_rets_m)
+
+#get monthly dividend yield
+dividend_yield <- Quandl("MULTPL/SP500_DIV_YIELD_MONTH")
+sp_adj_m<-getSymbols.yahoo("^NYA", from="2015-11-01",to="2023-06-01"  , periodicity = "monthly", auto.assign=FALSE)[,6]
+getSymbols("M1346BUSM156NNBR", src="FRED", from = "1970-01-01", to = "2019-12-31")
+
+dividend_yield <- dividend_yield %>%
+  filter(Date >= as.Date("2015-12-01")) %>%
+  filter(Date <= as.Date("2023-05-31")) %>%
+  filter(day(Date) != 1) %>%
+  mutate(lagged_dividend = lag(Value, 1)) %>%
+  select(-Date, -Value) %>% na.omit()
+
+sum(is.na(dividend_yield))
+rownames(dividend_yield) <- NULL
+
+View(dividend_yield)
+str(dividend_yield)
+
+# Inflation Data
+inflation <- read.csv("/Users/umar/Downloads/PPIACO.csv")
+inflation$DATE <- as.Date(inflation$DATE)
+inflation <- inflation %>% 
+  filter(DATE >= as.Date("2015-12-01")) %>%
+  filter(DATE <= as.Date("2023-06-01")) %>%
+  mutate(lagged_inflation = lag(PPIACO, 1)) %>%
+  dplyr::select(-DATE, -PPIACO) %>% na.omit()
+rownames(inflation) <- NULL
+sum(is.na(inflation))
+inflation<-log(inflation)
+View(inflation)
+str(inflation)
+
+# Industrial production index
+ipi_m <- read.csv("/Users/umar/Downloads/INDPRO.csv")
+ipi_m$DATE <- as.Date(ipi_m$DATE)
+ipi_m <- ipi_m %>% 
+  filter(DATE >= as.Date("2014-12-01")) %>%
+  filter(DATE <= as.Date("2023-05-31")) %>%
+  mutate(
+    lagged_ipi = lag(INDPRO, 12),
+    Change12M = INDPRO - lagged_ipi
+  ) %>%
+  dplyr::select(-DATE, -INDPRO, -lagged_ipi) %>%
+  na.omit()
+rownames(ipi_m) <- NULL
+sum(is.na(ipi_m))
+View(ipi_m)
+str(ipi_m)
+
+# Interest Rates
+last_business_day <- function(date) {
+  last_day <- ceiling_date(date, unit = "month") - days(1)
+  while (wday(last_day, label = TRUE) %in% c("Sat", "Sun")) {
+    last_day <- last_day - days(1)
+  }
+  return(last_day)
+}
+
+v_last_business_day <- Vectorize(last_business_day)
+
+m_tb <- read.csv("/Users/umar/Downloads/DGS1MO.csv")
+str(m_tb)
+m_tb$DGS1MO <- as.numeric(m_tb$DGS1MO)
+m_tb$DATE <- as.Date(m_tb$DATE)
+m_tb$DGS1MO<-na.spline(m_tb$DGS1MO)
+sum(is.na(m_tb$DGS1MO))
+
+m_tb <- m_tb %>% rename("YIELD" = "DGS1MO") %>%
+  filter(DATE == v_last_business_day(DATE)) %>%
+  filter(DATE >= as.Date("2015-11-01")) %>%
+  filter(DATE <= as.Date("2023-05-31")) %>%
+  arrange(DATE) %>%
+  mutate(Change = YIELD - lag(YIELD, 1)) %>%
+  dplyr::select(-DATE, -YIELD) %>%
+  na.omit()
+
+rownames(m_tb) <- NULL
+sum(is.na(m_tb))
+View(m_tb)
+str(m_tb)
+
+##Regression 
+
+#forming dataset
+
+sp_ex_rets_m_df <- fortify.zoo(sp_ex_rets_m) %>% select(-Index)
+sp_ex_rets_m_df <- as.data.frame(sp_ex_rets_m_df)
+rownames(sp_ex_rets_m_df) <- NULL
+str(sp_ex_rets_m_df)
+
+##all columns should have the same length
+print(nrow(sp_ex_rets_m_df))
+print(nrow(dividend_yield))
+print(nrow(inflation))
+print(nrow(ipi_m))
+print(nrow(m_tb))
+
+
+
+combined_data_original<-NULL
+combined_data_original <- cbind(sp_ex_rets_m_df, m_tb, dividend_yield, ipi_m, inflation)
+colnames(combined_data_original) <- c("exretssp", "interest_rates", "dividend", "ind_prod_index", "inflation")
+View(combined_data_original)
+
+# Perform linear regression
+model <- lm(exretssp ~ ., data = combined_data_original)
+
+# Print the summary of the regression model
+summary(model)
+
+##statisical tests on residuals
+
+residuals <- residuals(model)
+
+#histogram
+hist(residuals, breaks=50, main="Histogram of Residuals", xlab="Residuals")
+
+# Q-Q plot
+qqnorm(residuals, main="Q-Q Plot of Residuals")
+qqline(residuals)
+
+
+# Shapiro-Wilk Test
+shapiro.test(residuals)
+
+# Kolmogorov-Smirnov Test
+ks.test(residuals, "pnorm", mean(residuals), sd(residuals))
+
+# Jarque-Bera Test
+jarque.bera.test(residuals)
+
+
+###non linear regression model terms
+
+create_lagged_df <- function(data_series) {
+  
+  
+  pad_lag <- function(series, k) {
+    if (k > 0) {
+      return(c(rep(NA, k), head(series, -k)))
+    } else if (k < 0) {
+      return(c(tail(series, k), rep(NA, -k)))
+    } else {
+      return(series)
+    }
+  }
+  
+  # Lagged data by one period
+  lagged_1 <- pad_lag(data_series, 1)
+  
+  # Lagged data by two periods
+  lagged_2 <- pad_lag(data_series, 2)
+  
+  # Convert to data frame
+  combined_df <- data.frame(original = data_series, lagged_1 = lagged_1, lagged_2 = lagged_2)
+  
+  return(combined_df)
+}
+
+
+sp_adj_m <- getSymbols.yahoo("^NYA", from="2015-09-01",to="2023-06-01", periodicity = "monthly", auto.assign=FALSE)[,6]
+result <- create_lagged_df(sp_adj_m)
+
+
+head(result)
+result<-ROC(result, type = "discrete")[-1,]
+
+result$lagged_1_positive <- ifelse(result$lagged_1 > 0, result$lagged_1, 0)
+result$lagged_1_squared <- result$lagged_1^2
+result$lagged_2_squared <- result$lagged_2^2
+result<- result %>% select(-NYA.Adjusted,-lagged_1,-lagged_2) %>%  na.omit(result)
+  
+rownames(result) <- NULL
+View(result)
+
+
+print(nrow(sp_ex_rets_m_df))
+print(nrow(dividend_yield))
+print(nrow(inflation))
+print(nrow(ipi_m))
+print(nrow(m_tb))
+print(nrow(result))
+
+combined_data<-NULL
+combined_data <- cbind(sp_ex_rets_m_df, m_tb, dividend_yield, ipi_m, inflation, result)
+colnames(combined_data) <- c("exretssp", "interest_rates", "dividend", "ind_prod", "inflation", "lagged_1_positive", "lagged_1_squared", "lagged_2_squared")
+View(combined_data)
+
+# Perform linear regression with non-linear (nl) terms
+model_nl <- lm(exretssp ~ ., data = combined_data)
+
+
+# Print the summary of the regression model
+summary(model_nl)
+
+##statisical tests on residuals
+
+residuals_nl <- residuals(model_nl)
+
+#histogram
+hist(residuals_nl, breaks=50, main="Histogram of Residuals", xlab="Residuals")
+
+# Q-Q plot
+qqnorm(residuals_nl, main="Q-Q Plot of Residuals")
+qqline(residuals_nl)
+
+
+# Shapiro-Wilk Test
+shapiro.test(residuals_nl)
+
+# Kolmogorov-Smirnov Test
+ks.test(residuals_nl, "pnorm", mean(residuals_nl), sd(residuals_nl))
+
+# Jarque-Bera Test
+  jarque.bera.test(residuals_nl)
+
+
+
+library(glmnet)
+
+combined_data<-NULL
+combined_data <- cbind(sp_ex_rets_m_df, m_tb, dividend_yield, ipi_m, inflation, result)
+colnames(combined_data) <- c("exretssp", "interest_rates", "dividend", "ind_prod", "inflation", "lagged_1_positive", "lagged_1_squared", "lagged_2_squared")
+View(combined_data)
+
+# Extract response and predictor variables from the combined data
+response <- #enter response variable here
+predictors <- as.matrix([, -1])  #enter predictor variables here
+lasso_model <- glmnet(x = predictors, y = response, alpha = 1)
+cv.lasso <- cv.glmnet(x = predictors, y = response, alpha = 1)
+best_lambda_lasso <- cv.lasso$lambda.min
+best_lasso_model <- glmnet(x = predictors, y = response, alpha = 1, lambda = best_lambda_lasso)
+
+
+
+
+
+#non-parametric test
+
+combined_data<-NULL
+combined_data <- cbind(sp_ex_rets_m_df, m_tb, dividend_yield, ipi_m, inflation, result)
+colnames(combined_data) <- c("exretssp", "interest_rates", "dividend", "ind_prod", "inflation", "lagged_1_positive", "lagged_1_squared", "lagged_2_squared")
+View(combined_data)
+
+# Setup
+n <- nrow(combined_data)
+initial_train_size <- n - 12
+predictions <- numeric(12)  # Only 12 predictions
+
+# Identify predictor variables based on the initial model
+initial_train_data <- combined_data[1:initial_train_size, , drop = FALSE]
+model_initial <- lm(exretssp ~ ., data = initial_train_data)
+predictor_vars <- names(model_initial$coefficients)[-1]  # Excludes intercept
+
+# Recursive regression and prediction
+for (i in 1:12) {
+    # Subset the data for the training
+    train_data <- combined_data[1:(initial_train_size + i - 1), , drop = FALSE]
+    
+    # Fit the model on the training data
+    model <- lm(exretssp ~ ., data = train_data)
+    
+    # Prepare the next month's data with consistency in predictors
+    next_month_data <- combined_data[initial_train_size + i, predictor_vars, drop = FALSE]
+    
+    # Ensure all predictor variables are available, filling with NA if not
+    for (var in predictor_vars) {
+        if (!var %in% names(next_month_data)) {
+            next_month_data[[var]] <- NA
+        }
+    }
+    
+    predictions[i] <- predict(model, newdata = next_month_data)
+}
+
+
+# Test statistics
+actual_returns <- combined_data[(n - 11):n, "exretssp"]
+
+# Proportion of correctly predicted signs
+correct_signs <- sum(sign(predictions) == sign(actual_returns))
+prop_correct_signs <- correct_signs / length(predictions)
+
+# Predictive failure test statistic (simplified for the example)
+test_statistic <- (prop_correct_signs - 0.5) / (sqrt(0.5 * 0.5 / length(predictions)))
+
+# Results
+results <- data.frame(
+    Predicted = predictions,
+    Actual = actual_returns,
+    Correct_Sign = (sign(predictions) == sign(actual_returns))
+)
+
+# Proportions and test statistic in a table
+stats_table <- data.frame(
+    Proportion_Correct = prop_correct_signs,
+    Test_Statistic = test_statistic
+)
+
+print(results)
+print(stats_table)
+
+combined_data$predictions <- NA
+combined_data[(n-11):n, "predictions"] <- predictions
+View(combined_data)
+
+n<-length(combined_data$predictions)
+for (i in 1:n) {
+  combined_data$predsign[i] <- ifelse(combined_data$predictions[i+1] > 0, 1, 0)
+}
+combined_data_pred <- combined_data
+View(combined_data)
+write.csv(combined_data, "/Users/umar/Downloads/combined_data.csv", row.names = FALSE)
+
+
+###xgboost implementation
+library('xgboost')
+combined_data<-NULL
+combined_data <- cbind(sp_ex_rets_m_df, m_tb, dividend_yield, ipi_m, inflation, result)
+colnames(combined_data) <- c("exretssp", "interest_rates", "dividend", "ind_prod", "inflation", "lagged_1_positive", "lagged_1_squared", "lagged_2_squared")
+View(combined_data)
+
+combined_data$predictions <- NA
+n <- nrow(combined_data)
+initial_train_size <- n - 24
+predictions <- numeric(24)
+
+# Identify predictor variables based on the initial model
+initial_train_data <- as.matrix(combined_data[1:initial_train_size, -1, drop = FALSE]) # excludes the target variable
+initial_train_label <- as.matrix(combined_data[1:initial_train_size, 1, drop = FALSE]) # target variable
+
+# Initial model to get predictor variables
+initial_model <- xgboost(data = initial_train_data, label = initial_train_label, nrounds = 100, verbose = 0)
+
+# Predictive names
+predictor_vars <- colnames(initial_train_data)
+
+# Recursive regression and prediction
+for (i in 1:24) {
+    # Subset the data for the training
+    train_data <- as.matrix(combined_data[1:(initial_train_size + i - 1), -1, drop = FALSE]) # excludes the target variable
+    train_label <- as.matrix(combined_data[1:(initial_train_size + i - 1), 1, drop = FALSE]) # target variable
+    
+    # Fit the model on the training data
+    model <- xgboost(data = train_data, label = train_label, nrounds = 100, verbose = 0)
+    
+    # Prepare the next month's data
+    next_month_data <- as.matrix(combined_data[initial_train_size + i, predictor_vars, drop = FALSE])
+    
+    # Make the prediction
+    predictions[i] <- predict(model, newdata = matrix(next_month_data, nrow = 1))
+}
+
+# Test statistics
+actual_returns <- combined_data[(n - 23):n, "exretssp"]
+
+# Proportion of correctly predicted signs and test statistic
+correct_signs <- sum(sign(predictions) == sign(actual_returns))
+prop_correct_signs <- correct_signs / length(predictions)
+test_statistic <- (prop_correct_signs - 0.5) / (sqrt(0.5 * 0.5 / length(predictions)))
+
+# Results
+results <- data.frame(
+    Predicted = predictions,
+    Actual = actual_returns,
+    Correct_Sign = (sign(predictions) == sign(actual_returns))
+)
+
+# Proportions and test statistic in a table
+stats_table <- data.frame(
+    Proportion_Correct = prop_correct_signs,
+    Test_Statistic = test_statistic
+)
+
+print(results)
+print(stats_table)
+
+# Add predictions to the original data
+combined_data$predictions <- NA
+combined_data[(n-23):n, "predictions"] <- predictions
+
+# Calculate predicted sign
+combined_data$predsign <- NA
+for (i in 1:(n - 1)) {
+  combined_data$predsign[i] <- ifelse(combined_data$predictions[i + 1] > 0, 1, 0)
+}
+
+View(combined_data)
+
+
+
+##swtiching strategy 
+combined_data<-NULL
+sp_adj_m<-getSymbols.yahoo("^NYA", from="2015-12-01",to="2023-06-01"  , periodicity = "monthly", auto.assign=FALSE)[,6]
+combined_data <- cbind(sp_ex_rets_m_df, m_tb, dividend_yield, ipi_m, inflation, result, sp_adj_m, sp_rets_m)
+colnames(combined_data) <- c("exretssp", "interest_rates", "dividend", "ind_prod", "inflation", "lagged_1_positive", "lagged_1_squared", "lagged_2_squared", "price","index_returns")
+combined_data$predictions <- NA
+combined_data[(n-23):n, "predictions"] <- predictions
+View(combined_data)
+
+n<-length(combined_data$predictions)
+for (i in 1:n) {
+  combined_data$predsign[i] <- ifelse(combined_data$predictions[i+1] > 0, 1, 0)
+}
+combined_data<-combined_data %>% na.omit()
+row.names(combined_data) <- NULL
+View(combined_data)
+
+
+
+# Initialize new columns in your dataframe
+combined_data$W <- NA
+combined_data$N <- NA
+combined_data$B <- NA
+combined_data$It_next <- NA  # I_{t+1}
+combined_data$It_next2 <- NA  # I_{t+2}
+
+# Constants for transaction costs
+c1 = 0.0025
+c2 = 0.001
+
+# Initialize some variables
+W_initial = 10000
+N_initial = (ifelse(combined_data$predsign[1] == 1, W_initial, 0)*(1-c1))/combined_data$price[1]
+B_initial = ifelse(combined_data$predsign[1] == 0, W_initial, 0)*(1-c2)
+
+# Assign initial values
+combined_data$W[1] = W_initial
+combined_data$N[1] = N_initial
+combined_data$B[1] = B_initial
+
+
+# Iteratively go through each time period and apply your investment rules
+n <- nrow(combined_data)
+for (t in 1:(n - 2)) {
+  Wt = combined_data$W[t]
+  Pt = combined_data$price[t+1]
+  Dt = combined_data$dividend[t]
+  rt = combined_data$interest_rates[t]
+  It1 = combined_data$predsign[t]  
+  It2 = combined_data$predsign[t+1]
+
+  # Store It_next and It_next2
+  combined_data$It_next[t] = It1
+  combined_data$It_next2[t] = It2
+
+  # Case 1: Reinvest cash dividends in stocks
+  if (It1 == 1 && It2 == 1) {
+    combined_data$N[t + 1] = combined_data$N[t] + combined_data$N[t] * Dt * (1 - c1) / Pt
+    combined_data$B[t + 1] = 0
+
+  # Case 2: Sell stocks and buy bonds
+  } else if (It1 == 1 && It2 == 0) {
+    combined_data$N[t + 1] = 0
+    combined_data$B[t + 1] = (1 - c2) * ((1 - c1) * combined_data$N[t] * Pt + combined_data$N[t] * Dt)
+
+  # Case 3: Bonds mature, buy stocks
+  } else if (It1 == 0 && It2 == 1) {
+    combined_data$N[t + 1] = (1 - c1) * combined_data$B[t] * (1 + rt) / Pt
+    combined_data$B[t + 1] = 0
+
+  # Case 4: Bonds mature, buy bonds
+  } else {
+    combined_data$N[t + 1] = 0
+    combined_data$B[t + 1] = (1 - c2) * (1 + rt) * combined_data$B[t]
+  }
+
+  # Update W for the next period
+  combined_data$W[t + 1] = combined_data$N[t] * (Pt + Dt) + combined_data$B[t] * (1 + rt)
+}
+
+# Your combined_data dataframe should now have W, N, and B columns updated according to your rules.
+combined_data$switch_ret<-ROC(combined_data$W, type="discrete")
+
+combined_data<-combined_data %>% na.omit()
+View(combined_data)
+
+
+##market portfolio
+##returns of market portfolio
+symbols <- c("WILL5000INDFC", "BAMLCC0A0CMTRIV", "CSUSHPINSA", "DGS5")
+sym_names <- c("stock", "bond", "realt", "rfr")
+
+# Get symbols
+getSymbols(symbols, src="FRED", from = "1970-01-01", to = "2019-12-31", periodcity = "monthly")
+
+# Merge xts objects and switch to (business) monthly data
+index <- merge(WILL5000INDFC, BAMLCC0A0CMTRIV,CSUSHPINSA, DGS5)
+index <- na.locf(index)
+colnames(index) <- sym_names
+
+library(xts)
+
+index_monthly <- xts()
+
+
+for (col in colnames(index)) {
+  temp <- apply.monthly(index[, col], FUN = last)
+  colnames(temp) <- col
+  index_monthly <- merge(index_monthly, temp)
+}
+
+# View the xts object
+head(index_monthly)
+View(index_monthly)
+
+monthly_return <- Return.calculate(index_monthly, method="discrete")
+head(monthly_return)
+core_m<-monthly_return[,-4]%>%na.omit()
+
+corrplot(cor(core_m))
+corr(monthly_return)
+mean_return <- colMeans(monthly_return, na.rm=TRUE)
+cov_matrix <- cov(monthly_return, use="complete.obs")
+
+library(quadprog)
+
+n <- ncol(monthly_return) # Number of assets
+
+# Objective function parameters
+Dmat <- 2 * cov_matrix 
+dvec <- rep(0, n)       
+
+n <- ncol(monthly_return) 
+
+# Objective function parameters
+Dmat <- 2 * cov_matrix 
+dvec <- rep(0, n)       
+
+# Constraints
+# Sum of weights equal to 1
+Amat <- matrix(1, 1, n)
+
+bvec <- 1
+meq <- 1
+
+# Solve the quadratic program
+sol <- solve.QP(Dmat, dvec, t(Amat), bvec, meq = meq)
+
+# Portfolio weights
+weights <- sol$solution
+print("Market Portfolio Weights:")
+print(weights)
+
+# Create a new column for the market portfolio's returns
+monthly_return$Market_Portfolio <- rowSums(as.matrix(monthly_return) %*% matrix(weights, ncol=1))
+# Subset the xts object for the specific time range
+subset_data <- monthly_return["2015-12-01/2023-06-01", "Market_Portfolio"]
+subset_data<-tail(subset_data, nrow(combined_data))
+index_monthly<-tail(index_monthly, nrow(combined_data))
+row.names(subset_data)<-NULL
+row.names(index_monthly)<-NULL
+View(subset_data)
+View(index_monthly)
+head(index_monthly)
+head(subset_data)
+
+
+##testing/test statistics
+start_date <- as.Date("2015-12-01")
+end_date <- as.Date("2023-06-01")
+date_seq <- seq.Date(from=start_date, to=end_date, by="month")
+
+
+date_seq <- tail(date_seq, nrow(combined_data))
+switch_ret_xts <- xts(combined_data$switch_ret, order.by=date_seq)
+index_returns_xts <- xts(combined_data$index_returns, order.by=date_seq)
+market_returns_xts <- xts(subset_data$Market_Portfolio, order.by=date_seq)
+rfr_xts <- xts(index_monthly$rfr, order.by=date_seq)/100
+View(market_returns_xts)
+
+#Switch_rets represents the returns of the switching strategy
+#index_returns_xts represents the returns of the index
+
+#sharpe ratio
+SharpeRatio(switch_ret_xts[-1,], rfr_xts[-1,])
+print(SharpeRatio(market_returns_xts, rfr_xts))
+
+
+# Calculate Beta for Treynor Ratio
+beta_market <- CAPM.beta(market_returns_xts, index_returns_xts, rfr_xts)
+beta_switch <- CAPM.beta(switch_ret_xts[-1,],  index_returns_xts[-1,], rfr_xts[-1,])
+
+# Calculate Treynor Ratios
+treynor_market <- mean(market_returns_xts-rfr_xts) / beta_market
+treynor_switch <- mean(switch_ret_xts-rfr_xts) / beta_switch
+
+
+# Calculate Jensen's Alpha
+CAPM.jensenAlpha(switch_ret_xts[-1,], index_returns_xts[-1,],mean(rfr_xts))
+CAPM.jensenAlpha(market_returns_xts, index_returns_xts,mean(rfr_xts))
+
+r<-mean(rfr_xts)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

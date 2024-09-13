@@ -1,0 +1,72 @@
+##returns of market portfolio
+symbols <- c("WILL5000INDFC", "BAMLCC0A0CMTRIV", "CSUSHPINSA", "DGS5")
+sym_names <- c("stock", "bond", "realt", "rfr")
+
+# Get symbols
+getSymbols(symbols, src="FRED", from = "1970-01-01", to = "2019-12-31", periodcity = "monthly")
+
+# Merge xts objects and resample to monthly 
+index <- merge(WILL5000INDFC, BAMLCC0A0CMTRIV,CSUSHPINSA, DGS5)
+index <- na.locf(index)
+colnames(index) <- sym_names
+
+library(xts)
+
+index_monthly <- xts()
+
+
+for (col in colnames(index)) {
+  temp <- apply.monthly(index[, col], FUN = last)
+  colnames(temp) <- col
+  index_monthly <- merge(index_monthly, temp)
+}
+
+# View the resulting xts object
+head(index_monthly)
+View(index_monthly)
+
+library(PerformanceAnalytics)
+monthly_return <- Return.calculate(index_monthly, method="discrete")
+head(monthly_return)
+mean_return <- colMeans(monthly_return, na.rm=TRUE)
+cov_matrix <- cov(monthly_return, use="complete.obs")
+
+library(quadprog)
+
+n <- ncol(monthly_return) # Number of assets
+
+# Objective function parameters
+Dmat <- 2 * cov_matrix # As quadprog solves the problem in the form of 1/2 x' D x
+dvec <- rep(0, n)       # d-vector for the objective function
+
+library(quadprog)
+
+n <- ncol(monthly_return) # Number of assets
+
+# Objective function parameters
+Dmat <- 2 * cov_matrix 
+dvec <- rep(0, n)       
+
+# Constraints
+# Sum of weights equal to 1
+Amat <- matrix(1, 1, n)
+bvec <- 1
+meq <- 1
+
+# Solve the quadratic program
+sol <- solve.QP(Dmat, dvec, t(Amat), bvec, meq = meq)
+
+# Portfolio weights
+weights <- sol$solution
+print("Market Portfolio Weights:")
+print(weights)
+
+# Create a new column for the market portfolio's returns
+monthly_return$Market_Portfolio <- rowSums(as.matrix(monthly_return) %*% matrix(weights, ncol=1))
+# Subset the xts object for the specific time range
+subset_data <- monthly_return["2018-12-01/2023-06-01", "Market_Portfolio"]
+View(subset_data)
+
+
+
+

@@ -1,0 +1,58 @@
+
+##Regression 
+
+#forming dataset
+
+sp_ex_rets_m_df <- fortify.zoo(sp_ex_rets_m) %>% select(-Index)
+sp_ex_rets_m_df <- as.data.frame(sp_ex_rets_m_df)
+rownames(sp_ex_rets_m_df) <- NULL
+str(sp_ex_rets_m_df)
+
+head(sp_ex_rets_m_df$row_id)
+head(dividend_yield$row_id)
+head(inflation$row_id)
+head(ipi_m$row_id)
+head(m_tb$row_id)
+
+
+print(nrow(sp_ex_rets_m_df))
+print(nrow(dividend_yield))
+print(nrow(inflation))
+print(nrow(ipi_m))
+print(nrow(m_tb))
+
+
+
+combined_data_original<-NULL
+combined_data_original <- cbind(sp_ex_rets_m_df, m_tb, dividend_yield, ipi_m, inflation)
+colnames(combined_data_original) <- c("exretssp", "dividend", "inflation", "ind_prod", "interest_rates")
+View(combined_data_original)
+
+# Perform linear regression
+model <- lm(exretssp ~ ., data = combined_data_original)
+
+# Print the summary of the regression model
+summary(model)
+
+##statisical tests on residuals
+
+residuals <- residuals(model)
+
+#histogram
+hist(residuals, breaks=50, main="Histogram of Residuals", xlab="Residuals")
+
+# Q-Q plot
+qqnorm(residuals, main="Q-Q Plot of Residuals")
+qqline(residuals)
+
+
+# Shapiro-Wilk Test
+shapiro.test(residuals)
+
+# Kolmogorov-Smirnov Test
+ks.test(residuals, "pnorm", mean(residuals), sd(residuals))
+
+# Jarque-Bera Test
+jarque.bera.test(residuals)
+
+

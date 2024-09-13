@@ -1,0 +1,199 @@
+
+
+# Create symbol vectors
+symbols <- c("WILL5000INDFC", "BAMLCC0A0CMTRIV", "CSUSHPINSA", "DGS5")
+sym_names <- c("stock", "bond", "realt", "rfr")
+
+# Get symbols
+getSymbols(symbols, src="FRED", from = "1970-01-01", to = "2019-12-31")
+
+# Merge xts objects and resample to monthly 
+index <- merge(WILL5000INDFC, BAMLCC0A0CMTRIV,CSUSHPINSA, DGS5)
+index <- na.locf(index)
+colnames(index) <- sym_names
+
+# Convert daily data to monthly
+index_mon <- apply.monthly(index, FUN = last)
+
+# View the resulting xts object
+head(index_mon)
+
+# Create data frame
+df <- data.frame(date = index(idx_mon), coredata(idx_mon)) %>% 
+  mutate_at(vars(-c(date, rfr)), function(x) x/lag(x)-1) %>% 
+  mutate(rfr = rfr/100) 
+
+
+panel.hist <- function(x, ...)
+{
+  usr <- par("usr"); on.exit(par(usr))
+  par(usr = c(usr[1:2], 0, 1.5) )
+  h <- hist(x, plot = FALSE)
+  breaks <- h$breaks; nB <- length(breaks)
+  y <- h$counts; y <- y/max(y)
+  rect(breaks[-nB], 0, breaks[-1], y, panel.first = grid(),...)
+}
+
+panel.pearson <- function(x, y, ...) {
+  horizontal <- (par("usr")[1] + par("usr")[2]) / 2;
+  vertical <- (par("usr")[3] + par("usr")[4]) / 2;
+  text(horizontal, vertical, round(cor(x,y)+0.009, 2))}
+
+pairs(df[2:61 , 2:5],
+      col = "blue",
+      pch = 19,
+      cex = 1.5,
+      labels = NULL,
+      gap = 0.5,
+      diag.panel = panel.hist,
+      upper.panel = panel.pearson)
+
+title("Scatter plot, histogram, & correlation", adj = 0, line = 3)
+
+x.coords = par('usr')[1:2]
+y.coords = par('usr')[3:4]
+
+# Offset is estimated distance between edge of plot area and beginning of actual plot
+x.offset = 0.03 * (x.coords[2] - x.coords[1])  
+xrng =  (x.coords[2] - x.coords[1]) - 2*x.offset
+x.width = xrng/4  
+
+y.offset = 0.028 * (y.coords[2] - y.coords[1])
+yrng =  (y.coords[2] - y.coords[1]) - 2*y.offset
+y.width = yrng/4  
+
+# x-axis labels
+text(seq(x.coords[1] + x.offset + 0.5*x.width, x.coords[2] - x.offset - 0.5*x.width,
+         length.out=4), 0,
+     c("Stocks","Bonds","Gold","Real Estate"),
+     xpd=TRUE,adj=c(.5,.5), cex=.9)
+
+# y-axis labels
+text(x.coords, seq(y.coords[1] + y.offset + 0.5*y.width, y.coords[2] - 3*y.offset - 0.5*y.width, 
+            length.out=4),
+     rev(c("Stocks","Bonds","Gold","Real Estate")),
+     xpd=TRUE, adj=c(0.5, 0.5), 
+     srt=90,  # rotates text to be parallel to axis
+     cex=.9)
+
+## Portfolio simulation
+
+# Weighting that ensures more variation and random weighthing to stocks
+set.seed(123)
+
+# Function for simulation and graph
+port_sim <- function(df, sims, cols){
+  
+  if(ncol(df) != cols){
+    print("Columns don't match")
+    break
+  }  
+  
+  # Create weight matrix
+  wts <- matrix(nrow = sims, ncol = cols)
+  
+  for(i in 1:sims){
+    a <- runif(cols,0,1)
+    b <- a/sum(a)
+    wts[i,] <- b
+  }
+  
+  # Find returns
+  mean_ret <- colMeans(df)
+  
+  # Calculate covariance matrix
+  cov_mat <- cov(df)
+  
+  # Calculate random portfolios
+  port <- matrix(nrow = sims, ncol = 2)
+  for(i in 1:sims){
+    port[i,1] <- as.numeric(sum(wts[i,] * mean_ret))
+    port[i,2] <- as.numeric(sqrt(t(wts[i,] %*% cov_mat %*% wts[i,])))
+  }
+  
+  colnames(port) <- c("returns", "risk")
+  port <- as.data.frame(port)
+  port$Sharpe <- port$returns/port$risk*sqrt(12)
+  
+  max_sharpe <- port[which.max(port$Sharpe),]
+  
+  graph <- port %>% 
+    ggplot(aes(risk*sqrt(12)*100, returns*1200, color = Sharpe)) +
+    geom_point(size = 1.2, alpha = 0.4) +
+    scale_color_gradient(low = "darkgrey", high = "darkblue")+
+    labs(x = "Risk (%)",
+         y = "Return (%)",
+         title = "Simulated portfolios")
+  
+  out <- list(port = port, graph = graph, max_sharpe = max_sharpe, wts = wts)
+  
+}
+
+## Run simulation and plot
+port_sim_1 <- port_sim(df[2:61,2:5],1000,4)
+
+port_sim_1$graph + 
+  theme(legend.position = c(0.05,0.8), legend.key.size = unit(.5, "cm"), 
+      legend.background = element_rect(fill = NA)) 
+
+# Create function to calculate portfolio weights based on constraints and a graph
+port_select_func <- function(port, return_min, risk_max, port_names){
+  port_select  <-  cbind(port$port, port$wts)
+  risk_sd <- sd(port_sim_1$port$risk)
+  
+  port_wts <- port_select %>% 
+    mutate(returns = returns*12,
+           risk = risk*sqrt(12)) %>% 
+    filter(returns >= return_min,
+           risk <= risk_max) %>% 
+    summarise_at(vars(4:7), mean) %>% 
+    `colnames<-`(port_names)
+  
+  graph <- port_wts %>% 
+    rename("Stocks" = 1,
+           "Bonds" = 2,
+           "Gold" = 3,
+           "Real esate" = 4) %>% 
+    gather(key,value) %>% 
+    ggplot(aes(reorder(key,value), value*100 )) +
+    geom_bar(stat='identity', position = "dodge", fill = "blue") +
+    geom_text(aes(label=round(value,2)*100), vjust = -0.5) +
+    scale_y_continuous(limits = c(0,40)) +
+    labs(x="",
+         y = "Weights (%)",
+         title = "Average weights for risk-return constraints")
+  
+  out <- list(port_wts = port_wts, graph = graph)
+  
+  out
+  
+}
+
+## Run selection function
+results_1 <- port_select_func(port_sim_1,0.07, 0.1, sym_names[1:4])
+results_1$graph
+
+## Instantiate weighting
+fut_wt <- results_1$port_wts
+
+## Create rebalancing function
+rebal_func <- function(act_ret, weights){
+    tot_ret <- 1
+    ret_vec <- c()
+    for(i in 1:60){
+      wt_ret <- act_ret[i,]*weights # wt'd return
+      ret <- sum(wt_ret) # total return
+      tot_ret <- tot_ret * (1+ret) # cumulative return
+      ret_vec[i] <- ret 
+      weights <- (weights + wt_ret)/(sum(weights)+ret) # new weight based on change in asset value
+    }
+  ret_vec  
+}
+
+## Run function and create actual portfolio
+ret_vec <- rebal_func(df[61:121,2:5], fut_wt)
+
+port_act <- data.frame(returns = mean(ret_vec), 
+                         risk = sd(ret_vec), 
+                         sharpe = mean(ret_vec)/sd(ret_vec)*sqrt(12))
+
