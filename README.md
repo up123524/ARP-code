@@ -1,2 +1,2 @@
 # ARP-code
-Code I worked on to form the basis of my report for my project. 
+Code I worked on to form the basis of my report for my project. It was written in R as my preferential programming language and involved my analysing a paper constructing a series of simple trading rules. These rules would theoretically provide an investor with limited data access the ability to find consistent returns. I used this code to evaluate these trading rules and their effectiveness in forming a portfolio. 
